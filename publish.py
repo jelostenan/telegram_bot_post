@@ -2,7 +2,8 @@ import psycopg2
 from telegram import Bot
 from telegram.constants import ParseMode
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
+import random
 
 # Настройки базы данных
 DB_CONFIG = {
@@ -27,29 +28,40 @@ async def publish_posts():
         now = datetime.now()
         print(f"[INFO] Текущая дата и время: {now}")
 
-        # Извлечение контента для публикации
+        # Извлечение одного сообщения для публикации
         cursor.execute("""
-            SELECT c.chat_id, ct.content, ct.id 
+            SELECT c.chat_id, ct.content, ct.id, c.id AS channel_id
             FROM content ct
             JOIN channels c ON ct.channel_id = c.id
             WHERE ct.is_published = FALSE AND c.next_post_time <= %s
+            ORDER BY c.next_post_time ASC
+            LIMIT 1
         """, (now,))
-        rows = cursor.fetchall()
-        print(f"[INFO] Найдено сообщений для публикации: {len(rows)}")
+        row = cursor.fetchone()
 
-        # Публикация контента
-        for chat_id, content, content_id in rows:
-            try:
-                print(f"[INFO] Публикация в канал: {chat_id}, Текст: {content}")
-                # Асинхронная отправка сообщения
-                await bot.send_message(chat_id=chat_id, text=content, parse_mode=ParseMode.HTML)
-                print(f"[SUCCESS] Опубликовано в {chat_id}: {content}")
+        if not row:
+            print("[INFO] Нет сообщений для публикации.")
+            return
 
-                # Обновление статуса публикации
-                cursor.execute("UPDATE content SET is_published = TRUE WHERE id = %s", (content_id,))
-                conn.commit()
-            except Exception as e:
-                print(f"[ERROR] Ошибка при публикации в {chat_id}: {e}")
+        chat_id, content, content_id, channel_id = row
+
+        try:
+            # Публикация сообщения
+            print(f"[INFO] Публикация в канал: {chat_id}, Текст: {content}")
+            await bot.send_message(chat_id=chat_id, text=content, parse_mode=ParseMode.HTML)
+            print(f"[SUCCESS] Опубликовано в {chat_id}: {content}")
+
+            # Обновление статуса сообщения
+            cursor.execute("UPDATE content SET is_published = TRUE WHERE id = %s", (content_id,))
+
+            # Расчёт случайного времени для следующей публикации
+            next_interval = random.randint(60, 5 * 60)  # От 1 до 5 минут
+            next_post_time = now + timedelta(seconds=next_interval)
+            cursor.execute("UPDATE channels SET next_post_time = %s WHERE id = %s", (next_post_time, channel_id))
+
+            conn.commit()
+        except Exception as e:
+            print(f"[ERROR] Ошибка при публикации в {chat_id}: {e}")
 
     except Exception as e:
         print(f"[ERROR] Ошибка подключения к базе данных: {e}")
